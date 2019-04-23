@@ -17,7 +17,23 @@ exec(char *path, char **argv)
   struct inode *ip;
   struct proghdr ph;
   pde_t *pgdir, *oldpgdir;
-  struct proc *curproc = myproc();
+  struct thread *curthread = mythread();
+  struct proc *curproc = curthread->parent;
+
+    // This makes sure we won't exec and exit at the same time
+    capture_ptable_lock();
+    if (mythread()->killed == 1){
+        kthread_exit(curthread->tid);
+        release_ptable_lock();
+        return -1;
+    }
+
+    for(struct thread *t = &(curproc->threads[0]) ; t < &curproc->threads[NTHREAD]; t++){
+        if(t->state != UNUSED && t != curthread)
+            t->killed = 1;
+    }
+    release_ptable_lock();
+
 
   begin_op();
 
@@ -94,12 +110,18 @@ exec(char *path, char **argv)
   safestrcpy(curproc->name, last, sizeof(curproc->name));
 
   // Commit to the user image.
+//    c = mycpu();
+//    c->proc = curproc;
+//    c->thrd = curthread;
+
+
+
   oldpgdir = curproc->pgdir;
   curproc->pgdir = pgdir;
   curproc->sz = sz;
-  curproc->tf->eip = elf.entry;  // main
-  curproc->tf->esp = sp;
-  switchuvm(curproc);
+  curthread->tf->eip = elf.entry;  // main
+  curthread->tf->esp = sp;
+  switchuvm(curthread);
   freevm(oldpgdir);
   return 0;
 

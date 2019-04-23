@@ -110,6 +110,7 @@ int             growproc(int);
 int             kill(int);
 struct cpu*     mycpu(void);
 struct proc*    myproc();
+struct thread*  mythread();
 void            pinit(void);
 void            procdump(void);
 void            scheduler(void) __attribute__((noreturn));
@@ -120,6 +121,10 @@ void            userinit(void);
 int             wait(void);
 void            wakeup(void*);
 void            yield(void);
+void            capture_ptable_lock(); // USED FOR EXEC.C for making sure we won't exec & exit concurently
+void            release_ptable_lock();
+void            kthread_exit(); // TODO: DEBUG ONLY!
+
 
 // swtch.S
 void            swtch(struct context**, struct context*);
@@ -181,7 +186,7 @@ void            freevm(pde_t*);
 void            inituvm(pde_t*, char*, uint);
 int             loaduvm(pde_t*, char*, struct inode*, uint, uint);
 pde_t*          copyuvm(pde_t*, uint);
-void            switchuvm(struct proc*);
+void            switchuvm(struct thread *); // CHANGED TO THREAD as each thread has it's own stacks
 void            switchkvm(void);
 int             copyout(pde_t*, uint, void*, uint);
 void            clearpteu(pde_t *pgdir, char *uva);

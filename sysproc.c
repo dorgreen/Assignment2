@@ -6,6 +6,7 @@
 #include "memlayout.h"
 #include "mmu.h"
 #include "proc.h"
+#include "kthread.h"
 
 int
 sys_fork(void)
@@ -67,7 +68,7 @@ sys_sleep(void)
   acquire(&tickslock);
   ticks0 = ticks;
   while(ticks - ticks0 < n){
-    if(myproc()->killed){
+    if(mythread()->killed){
       release(&tickslock);
       return -1;
     }
@@ -88,4 +89,39 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+// FOR TASK 2.2
+int sys_kthread_create(void){
+  int start_func_ptr = 0;
+  int stack_ptr = 0;
+  // load first arg
+    // we shall cast to pointer at send...
+  if(argint(0, &start_func_ptr) < 0)
+    return -1;
+
+  // load second arg
+  // we shall cast to pointer at send...
+  if(argint(1, &stack_ptr) < 0)
+    return -1;
+
+  return kthread_create((void *)start_func_ptr, (void *) stack_ptr);
+}
+
+
+int sys_kthread_id(void){
+  return kthread_id();
+}
+
+int sys_kthread_exit(void){
+  kthread_exit();
+  return 0;
+
+}
+int sys_kthread_join(void){
+  int tid;
+  if(argint(0, &tid) < 0)
+    return -1;
+
+  return kthread_join(tid);
 }

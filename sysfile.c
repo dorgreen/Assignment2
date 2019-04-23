@@ -374,7 +374,7 @@ sys_chdir(void)
 {
   char *path;
   struct inode *ip;
-  struct proc *curproc = myproc();
+  struct proc *curproc = myproc(); // working dir is a property of proc
   
   begin_op();
   if(argstr(0, &path) < 0 || (ip = namei(path)) == 0){
