@@ -205,8 +205,9 @@ int kthread_join(int thread_id) {
 // ASSUMES WE ARE HOLDING THE PTABLE.LOCK THE WHOLE TIME!
 int close_thread(struct thread *t) {
     //panic("close thread not implemented!");
-    kfree(t->kstack);
-    t->kstack = 0;
+    //if(t->kstack != 0) kfree(t->kstack);
+
+    //t->kstack = 0;
 
     // TODO: IS THAT THE RIGHT PLACE TO DEALLOC tf and context ?
     //kfree(t->tf); no need to dealloc as they exist on the kstack
@@ -215,7 +216,7 @@ int close_thread(struct thread *t) {
     t->context = 0;
 
     //t->tid = 0; // Don't reset tid yet, we use it for kthead_join(tid) !
-    t->parent = 0;
+    //t->parent = 0;
     //t->cwd = 0; // CWD IS A PROPERTY OF PROC!
     t->killed = 0;
 
@@ -224,13 +225,13 @@ int close_thread(struct thread *t) {
 
     int live_threads_count = 0;
     for (struct thread *thrd = &(t->parent->threads[0]); thrd < &t->parent->threads[NTHREAD]; thrd++) {
-        if (thrd != t && thrd->state != UNUSED && thrd->state != ZOMBIE) {
+        if (thrd != t && !(thrd->state == UNUSED || thrd->state == ZOMBIE)) {
             live_threads_count++;
         }
     }
 
     wakeup(t);
-    if (live_threads_count == 0 && t->parent->state != P_ZOMBIE) exit();
+    if (live_threads_count == 0 || t->parent->state == P_ZOMBIE) exit();
 
     return 0;
 }
@@ -356,6 +357,9 @@ userinit(void) {
 int
 growproc(int n) {
     uint sz;
+//    if(!holding(&ptable.lock))
+//        acquire(&ptable.lock);
+
     struct thread *curthread = mythread();
     struct proc *curproc = curthread->parent;
 
@@ -368,6 +372,7 @@ growproc(int n) {
             return -1;
     }
     curproc->sz = sz;
+//    acquire(&ptable.lock);
     switchuvm(curthread);
     return 0;
 }
@@ -538,7 +543,10 @@ exit(void) {
     acquire(&ptable.lock);
 
     curproc->state = P_ZOMBIE;
-    close_thread(curthread); // NOT AN INFINITE LOOP WITH EXIT, as the call to exit is conditioned with != P_ZOMBIE
+    curthread ->killed = 1;
+
+
+    //close_thread(curthread); // NOT AN INFINITE LOOP WITH EXIT, as the call to exit is conditioned with != P_ZOMBIE
 
 
 
@@ -564,7 +572,7 @@ exit(void) {
         }
     }
 
-    // p is now no longer needed, even as a zombie. reset it
+    // p is now just a zombie. reset most of it
     p->parent = 0;
     p->pid = 0;
     for(int i = 0 ; i < 16 ; i++){
@@ -572,12 +580,17 @@ exit(void) {
     }
     p->pgdir = 0;
     p->sz = 0;
-    p->state = UNUSED;
+    p->state = P_ZOMBIE;
+    curthread->state = ZOMBIE;
+    curthread->killed = 1;
+
+
     release(&ptable.lock);
+    yield();
 
 
     // Jump into the scheduler, never to return.
-    sched();
+    //sched();
     panic("zombie exit");
 }
 
@@ -650,16 +663,37 @@ scheduler(void) {
     struct cpu *c = mycpu();
     c->proc = 0;
     c->thrd = 0;
+    int count_empty = 0;
 
     for (;;) {
         // Enable interrupts on this processor.
         sti();
 
         // Loop over process table looking for process to run.
+        // also cleans zombie procs.
         acquire(&ptable.lock);
         for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
             if (p->state == P_UNUSED)
                 continue;
+
+            if(p->state == P_ZOMBIE){
+                count_empty = 0;
+                for(t = p->threads ; t < &p->threads[NTHREAD]; t++){
+                    if(t->state == UNUSED) count_empty++;
+                    if(t->state == ZOMBIE){
+                        t->tid = 0;
+                        t->tf = 0;
+                        //t->context = 0;
+                        t->state = UNUSED;
+                        count_empty++;
+                    }
+                }
+                if(count_empty == NTHREAD){
+                    p->state = P_UNUSED;
+                }
+
+                continue;
+            }
 
             // iterate over threads of this proc, searching for runnables.
             // TODO: such trivial solution might starve threads with large ....index?
@@ -734,14 +768,26 @@ yield(void) {
     //struct cpu *c = mycpu();
     t = mythread();
 
-    //t = c->thrd;
-    t->state = RUNNABLE; // NOTE THE THREAD
-//    c->thrd = 0;
-//    c->proc = 0;
 
-    if (t->killed) {
+    if(t->state != ZOMBIE) t->state = RUNNABLE; // NOTE THE THREAD
+
+
+    if (t->killed && t->state != ZOMBIE) {
         close_thread(t);
     }
+
+    // This thread could be cleaned!
+//    if(t->state == ZOMBIE){
+//        t->tid = 0;
+//        t->tf = 0;
+//        //t->context = 0;
+//        t->state = UNUSED;
+//        if(t->parent->state == P_ZOMBIE){
+//            t->parent->state = P_UNUSED;
+//            t->parent = 0;
+//        }
+//    }
+
 
     sched();
     release(&ptable.lock);
