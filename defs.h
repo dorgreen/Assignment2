@@ -124,6 +124,10 @@ void            yield(void);
 void            capture_ptable_lock(); // USED FOR EXEC.C for making sure we won't exec & exit concurently
 void            release_ptable_lock();
 void            kthread_exit(); // TODO: DEBUG ONLY!
+int             kthread_mutex_alloc();
+int             kthread_mutex_dealloc(int mutex_id);
+int             kthread_mutex_lock(int mutex_id);
+int             kthread_mutex_unlock(int mutex_id);
 
 
 // swtch.S
