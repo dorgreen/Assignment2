@@ -90,10 +90,13 @@ int kthread_create(void (*start_func)(), void *stack) {
 
     int tid;
     struct thread *t;
+    struct thread *this_thread;
     struct proc *p;
     void *sp; // used for kstack size counting for space for context etc'
 
-    p = myproc();
+    this_thread = mythread();
+    if(this_thread == 0) return -1;
+    p = this_thread->parent;
     if (p == 0) return -1;
 
     // find the next unused thread
@@ -132,15 +135,9 @@ int kthread_create(void (*start_func)(), void *stack) {
 
     // Leave room for trap frame.
     sp -= sizeof *t->tf;
-    t->tf = (struct trapframe *) sp;
-    // trapframe set-up as if we just returned from an inturrpt.
-    // eip holds the pointer to the return address, in our case the user-supplied start_func.
-    memset(t->tf, 0, sizeof(*t->tf));
-    t->tf->cs = (SEG_UCODE << 3) | DPL_USER;
-    t->tf->ds = (SEG_UDATA << 3) | DPL_USER;
-    t->tf->es = t->tf->ds;
-    t->tf->ss = t->tf->ds;
-    t->tf->eflags = FL_IF;
+    // deep copy this thread's TF to the new thread
+    *(t->tf) = *(this_thread->tf);
+
     t->tf->esp = (uint) sp + PGSIZE; // TODO SHOULD BE POINTER TO next free space on ustack
     t->tf->eip = (uint) start_func;  // eip holds the address to resume from
 
@@ -149,10 +146,6 @@ int kthread_create(void (*start_func)(), void *stack) {
     sp -= 4;
     *(uint *) sp = (uint) trapret;
 
-    sp -= sizeof *t->context;
-    t->context = (struct context *) sp;
-    memset(t->context, 0, sizeof *t->context);
-    t->context->eip = (uint) forkret;
     // set-up context
     sp -= sizeof *t->context;
     t->context = (struct context *) sp;
@@ -182,7 +175,11 @@ int kthread_id() {
 // ASSUMING WE ARE HOLDING THE PTABLE.LOCK
 // if our thread is the last, this will close the proc as well.
 void kthread_exit() {
-    close_thread(mythread());
+    struct thread *t;
+    t = mythread();
+    t->killed = 1;
+    yield();
+    return; // we never get here
 }
 
 //This function suspends the execution of the calling thread until the target thread, indicated by the
@@ -203,18 +200,28 @@ int kthread_join(int thread_id) {
 
     if (t->tid != thread_id) return -1; // No thread with that thread_id, so no reason to suspend
 
+    // SUSPEND UNTIL t HAS EXITED!
+    if(t->state != ZOMBIE && t->state != UNUSED){
+        sleep(t, &ptable.lock); // TODO: IS THIS THE RIGHT LOCK?!
+    }
+
+
     if (t->state == ZOMBIE) {
-        t->tid = 0;
+        //t->tid = 0;
         t->state = UNUSED;
+        t->context = 0;
+        t->chan = 0;
+        kfree(t->kstack);
+        t->kstack = 0;
+        return 0;
     }// clean t if it's a zombie
 
     if (t->state == UNUSED) {
         return 0; // No reason to suspend if exited.
     }
 
-    // SUSPEND UNTIL t HAS EXITED!
-    sleep(t, &ptable.lock); // TODO: IS THIS THE RIGHT LOCK?!
-    return 0;
+
+    return -1;
 
 }
 
@@ -249,8 +256,15 @@ int close_thread(struct thread *t) {
         }
     }
 
-    wakeup(t);
-    if (live_threads_count == 0 || t->parent->state == P_ZOMBIE) exit();
+    release(&ptable.lock);
+    wakeup(t); // wake threads waiting on this thread e.g kthread_join
+
+
+    // if this is the last thread (i.e the user called pthread_exit() on the only thread in this proc)
+    // call exit to fully kill (turn to zombie) this proc
+    if (live_threads_count == 0 && t->parent->state == P_USED){
+        exit();
+    }
 
     return 0;
 }
@@ -445,37 +459,7 @@ fork(void) {
     // Copy thread state from curthread to the main thread of the newly created proc
 
     // deep copy TF from original thread
-    nt->tf = memset(nt->tf, 0, sizeof(*nt->tf));
-
-    //pusha
-    nt->tf->edi = curthread->tf->edi;
-    nt->tf->esi = curthread->tf->esi;
-    nt->tf->ebp = curthread->tf->ebp;
-    nt->tf->oesp = curthread->tf->oesp;
-    nt->tf->ebx = curthread->tf->ebx;
-    nt->tf->edx = curthread->tf->edx;
-    nt->tf->ecx = curthread->tf->ecx;
-    nt->tf->eax = curthread->tf->eax;
-    // rest of trapframe
-    nt->tf->gs = curthread->tf->gs;
-    nt->tf->padding1 = curthread->tf->padding1;
-    nt->tf->fs = curthread->tf->fs;
-    nt->tf->padding2 = curthread->tf->padding2;
-    nt->tf->es = curthread->tf->es;
-    nt->tf->padding3 = curthread->tf->padding3;
-    nt->tf->ds = curthread->tf->ds;
-    nt->tf->padding4 = curthread->tf->padding4;
-    nt->tf->trapno = curthread->tf->trapno;
-    // x86 hardware
-    nt->tf->err = curthread->tf->err;
-    nt->tf->eip = curthread->tf->eip;
-    nt->tf->cs = curthread->tf->cs;
-    nt->tf->padding5 = curthread->tf->padding5;
-    nt->tf->eflags = curthread->tf->eflags;
-    // crossing rings
-    nt->tf->esp = curthread->tf->esp;
-    nt->tf->ss = curthread->tf->ss;
-    nt->tf->padding6 = curthread->tf->padding6;
+    *(nt->tf) = *(curthread->tf);
 
     // Clear %eax so that fork returns 0 in the child.
     // the new TF is a deep copy so no issues here
@@ -517,8 +501,11 @@ exit(void) {
     p = curproc;
 
     acquire(&ptable.lock);
+    // if two threads try to kill the same proc, the first will mark the second as killed
     if (curthread->killed == 1) {
-        close_thread(curthread);
+        release(&ptable.lock);
+        yield();
+        //close_thread(curthread);
         return;
     }
 
@@ -526,7 +513,7 @@ exit(void) {
     // wake threads sleeping on this chan if needed.
     for (struct thread *t = &(p->threads[0]); t < &p->threads[NTHREAD]; t++) {
         if (t->state != UNUSED && t->state != ZOMBIE && t != curthread) {
-            t->killed = 1; // even if t is running
+            t->killed = 1; // even if t is running. it will be killed upon yielding or resched
             if (t->state == SLEEPING) t->state = RUNNABLE;
             wakeup(t);
         }
@@ -591,28 +578,18 @@ exit(void) {
                 for (struct thread *t = &(p->threads[0]); t < &p->threads[NTHREAD]; t++) {
                     if (t->state == ZOMBIE) {
                         has_zombie = 1;
-                        break;
+                        break; // break inner-loop of threads. all we need to know is if there as some zombie threads.
                     }
                 }
-                if (has_zombie || p->state == P_ZOMBIE) wakeup1(initproc);
+                if (has_zombie || p->state == P_ZOMBIE) continue; //wakeup1(initproc);
             }
 
         }
     }
 
-    // p is now just a zombie. reset most of it
-    //p->parent = 0;
-    //p->pid = 0;
-    for (int i = 0; i < 16; i++) {
-        p->name[i] = 0;
-    }
-    p->pgdir = 0;
-    p->sz = 0;
-    p->state = P_ZOMBIE;
-    curthread->state = ZOMBIE;
+
+
     curthread->killed = 1;
-
-
     release(&ptable.lock);
     yield();
 
@@ -646,7 +623,7 @@ wait(void) {
                 for (int i = 0; i < NTHREAD; i++) {
                     t = &(p->threads[i]);
                     if (t->state == ZOMBIE) {
-                        // TODO: COULD BE REPLACED WITH A CALL TO close_thread()
+                        // Clean the thread's state
                         kfree(t->kstack);
                         t->kstack = 0;
                         t->tid = 0;
@@ -655,12 +632,44 @@ wait(void) {
                         //t->cwd = 0; // CWD @ PROC
                         t->killed = 0;
                     }
+                    else if(t->state != UNUSED){
+                        // wait for this thread to exit.
+                        wakeup1(t);
+                        sleep(t, &ptable.lock);
+                    }
                 }
 
                 freevm(p->pgdir); // TODO: SOME THREADS COULD STILL BE RUNNING. MAYBE ADD A TEST? MAYBE THIS ISN'T THE SPOT?
-                p->name[0] = 0;
+                for (int i = 0; i < 16; i++) {
+                    p->name[i] = 0;
+                }
+                p->pgdir = 0;
+                p->sz = 0;
                 p->state = P_UNUSED;
                 p->pid = 0; // TODO: IS THAT OK IF THERE ARE STILL RUNNING THREADS?
+
+
+                // Forcefully decallocate mutexs allocated by this dead proc, if there are any
+                // TODO: UNCOMMENT!!!!
+//                kthread_mutex_t *mu;
+//
+//                acquire(&mutable.lock);
+//                for (mu = &(mutable.mutex[0]); mu < &(mutable.mutex[0]); mu++) {
+//                    // Search for a mutex that was "ghosted" by this dead proc
+//                        if (mu->state != M_UNUSED && mu->owning_proc == p) {
+//                        // Dealloc this mutex
+//                        // TODO: should wakeup waiting threads here?
+//                        mu->owning_proc = 0;
+//                        for (int j = 0; j < NTHREAD; j++) {
+//                            mu->waiting_threads[j] = 0;
+//                        }
+//                        mu->locking_thread = 0;
+//                        mu->owning_proc = 0;
+//                        mu->id = 0;
+//                        mu->state = UNUSED;
+//                    }
+//                }
+//                release(&mutable.lock);
                 release(&ptable.lock);
                 return pid;
             }
@@ -675,6 +684,7 @@ wait(void) {
         // Wait for children to exit.  (See wakeup1 call in proc_exit.)
         sleep(curproc, &ptable.lock);  //DOC: wait-sleep #TODO: WHO WAKES THEM UP? CLOSING THE PROC?
     }
+    release(&ptable.lock);
 }
 
 //PAGEBREAK: 42
@@ -692,7 +702,7 @@ scheduler(void) {
     struct cpu *c = mycpu();
     c->proc = 0;
     c->thrd = 0;
-    int count_empty = 0;
+    //int count_empty = 0;
 
     for (;;) {
         // Enable interrupts on this processor.
@@ -705,25 +715,25 @@ scheduler(void) {
             if (p->state == P_UNUSED)
                 continue;
 
-            if (p->state == P_ZOMBIE) {
-                count_empty = 0;
-                for (t = p->threads; t < &p->threads[NTHREAD]; t++) {
-                    if (t->state == UNUSED) count_empty++;
-                    if (t->state == ZOMBIE) {
-                        t->tid = 0;
-                        t->tf = 0;
-                        //t->context = 0;
-                        t->state = UNUSED;
-                        count_empty++;
-                    }
-                }
-                wakeup1(p);
-                if (count_empty == NTHREAD) {
-                    //p->state = P_UNUSED;
-                }
-
-                continue;
-            }
+//            if (p->state == P_ZOMBIE) {
+//                count_empty = 0;
+//                for (t = p->threads; t < &p->threads[NTHREAD]; t++) {
+//                    if (t->state == UNUSED) count_empty++;
+//                    if (t->state == ZOMBIE) {
+//                        t->tid = 0;
+//                        t->tf = 0;
+//                        //t->context = 0;
+//                        t->state = UNUSED;
+//                        count_empty++;
+//                    }
+//                }
+//                wakeup1(p);
+//                if (count_empty == NTHREAD) {
+//                    //p->state = P_UNUSED;
+//                }
+//
+//                continue;
+//            }
 
             // iterate over threads of this proc, searching for runnables.
             // TODO: such trivial solution might starve threads with large ....index?
@@ -803,7 +813,9 @@ yield(void) {
 
 
     if (t->killed && t->state != ZOMBIE) {
+        t->state = RUNNING;
         close_thread(t);
+        acquire(&ptable.lock);
     }
 
     // This thread could be cleaned!
@@ -929,7 +941,6 @@ kill(int pid) {
                 if (t->state == SLEEPING)
                     t->state = RUNNABLE;
             }
-
 
             release(&ptable.lock);
             return 0;

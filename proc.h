@@ -1,3 +1,4 @@
+
 // Per-CPU state
 struct cpu {
   uchar apicid;                // Local APIC ID
@@ -53,8 +54,6 @@ struct thread {
     int killed;                  // If non-zero, have been killed // SHOULD BE IN BOTH?
 
 };
-
-
 
 // Per-process state
 struct proc {
