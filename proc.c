@@ -89,6 +89,7 @@ myproc(void) {
 }
 
 // Creates a new EMBRYO thread in proc p.
+// it has an empty trapframe and context set to forkret
 // Returns 0 on error
 // Assumes NOT holding ptable_lock
 struct thread* alloc_thread(struct proc* p){
@@ -127,12 +128,14 @@ struct thread* alloc_thread(struct proc* p){
     t->killed = 0;
 
 
-    sp = t->kstack + KSTACKSIZE;
+    sp = (uint) t->kstack + KSTACKSIZE;
 
     // Leave room for trap frame.
     sp -= sizeof *t->tf;
     //set tf pointer @ kernel stack
     t->tf = (struct trapframe *) sp;
+    // make sure to reset all values :)
+    memset(t->tf, 0, sizeof *t->tf);
 
     // set new context to resume on trapret
     sp -= 4;
@@ -145,13 +148,6 @@ struct thread* alloc_thread(struct proc* p){
     // make sure to reset all values :)
     memset(t->context, 0, sizeof *t->context);
 
-
-    // allocate context on kstack
-    sp -= sizeof *t->context;
-    // set pointer
-    t->context = (struct context *) sp;
-    // make sure to reset all values :)
-    memset(t->context, 0, sizeof *t->context);
     t->context->eip = (uint)forkret; // return to fork!
 
     return t;
@@ -160,74 +156,28 @@ struct thread* alloc_thread(struct proc* p){
 
 int kthread_create(void (*start_func)(), void *stack) {
 
-    int tid;
     struct thread *t;
     struct thread *this_thread;
     struct proc *p;
-    void *sp; // used for kstack size counting for space for context etc'
 
     this_thread = mythread();
     if (this_thread == 0) return -1;
     p = this_thread->parent;
     if (p == 0) return -1;
 
-    // find the next unused thread
-    acquire(&ptable.lock);
-    for (t = &p->threads[0]; t < &p->threads[NTHREAD]; t++) {
-        if (t->state == UNUSED) {
-            t->state = EMBRYO;
-            break;
-        }
-    }
-    release(&ptable.lock);
+    t = alloc_thread(p);
+    if(t==0) return -1;
+    // t is now a fresh (EMBRYO) thread with an empty trapframe and USTACK, and context set to forkret
 
-    if (t->state != EMBRYO)
-        return -1; // NO UNUSED THREADS IN OUR PROC!
+    //t->ustack = stack; // TODO: ME OR WITHOUT ADDING MAX STACK SIZE?!
+    t->ustack = stack + MAX_STACK_SIZE; // trusting the user it is of the right size, and allocated\deallocated properly
 
-
-    // Calculate and fill in all fields of the new thread
-    tid = (((p->pid) * thread_constant) + (int) (t - &p->threads[0]) / sizeof(&t)); // tid = pid 00 thread_index ;
-    t->tid = tid; // note how (tid/thread_constant) = p->pid. used for debugging
-    t->parent = p;
-
-    // allocate kstack and rollback-fail if unable to do so
-    if ((t->kstack = kalloc()) == 0) {
-        p->state = P_UNUSED;
-        t->parent = 0;
-        t->state = UNUSED;
-        t->tid = 0;
-        return 0;
-    }
-    t->ustack = stack; // trusting the user it is of the right size, and allocated\deallocated properly
-    t->chan = 0;
-    t->killed = 0;
-
-
-    sp = t->kstack + KSTACKSIZE;
-
-    // Leave room for trap frame.
-    sp -= sizeof *t->tf;
-    //set tf pointer @ kernel stack
-    t->tf = (struct trapframe *) sp;
     // deep copy this thread's TF to the new thread
     *(t->tf) = *(this_thread->tf);
 
+    // Set USTACK and entry point as user specified
     t->tf->esp = (uint) stack + MAX_STACK_SIZE; // esp points to the next free space on ustack.
     t->tf->eip = (uint) start_func;  // eip holds the address to resume from
-
-
-    // Set up new context to start executing at start_func
-//    sp -= 4;
-//    *(uint *) sp = (uint) trapret;
-//
-    // allocate context on kstack
-    sp -= sizeof *t->context;
-    // set pointer
-    t->context = (struct context *) sp;
-    // make sure to reset all values :)
-    memset(t->context, 0, sizeof *t->context);
-//    t->context->eip = (uint) start_func;
-
 
 
     // Done, t is not longer EMBRYO
@@ -235,7 +185,7 @@ int kthread_create(void (*start_func)(), void *stack) {
     t->state = RUNNABLE;
     release(&ptable.lock);
 
-    return tid;
+    return t->tid;
 }
 
 int kthread_id() {
@@ -319,6 +269,8 @@ int kthread_join(int thread_id) {
 // ASSUMES NOT HOLDING THE PTABLE.LOCK UPON ENTRY!
 int close_thread(struct thread *t) {
 
+    if(t->parent == initproc) return -1;
+
     int live_threads_count = 0;
     for (struct thread *thrd = &(t->parent->threads[0]); thrd < &t->parent->threads[NTHREAD]; thrd++) {
         if (thrd != t && !(thrd->state == UNUSED || thrd->state == ZOMBIE)) {
@@ -329,6 +281,7 @@ int close_thread(struct thread *t) {
     // if this is the last thread (i.e the user called pthread_exit() on the only thread in this proc)
     // call exit to fully kill (turn to zombie) this proc
     // after the first call to exit() the proc is already P_ZOMBIE
+    // the last thread (this) will close the proc and set itself to ZOMBIE.
     if (live_threads_count == 0 && t->parent->state == P_USED) {
         exit();
     } else {
@@ -368,7 +321,6 @@ mythread(void) {
 static struct proc *
 allocproc(void) {
     struct proc *p;
-    char *sp;
     struct thread *t;
 
     acquire(&ptable.lock);
@@ -383,39 +335,15 @@ allocproc(void) {
     found:
     p->state = P_USED;
     p->pid = nextpid++;
-
-    // init the main thread. as this proc was UNUSED, we can assume the first thread is avilable.
-    t = &(p->threads[0]);
-    t->parent = p;
-    t->state = EMBRYO;
-    t->tid = (p->pid) * thread_constant;
-
     release(&ptable.lock);
 
-    // Allocate kernel stack.
-    // reset state if unsuccessful
-    if ((t->kstack = kalloc()) == 0) {
+    // init the main thread.
+    // it is being allocated with "forkret" as context, as needed
+    t = alloc_thread(p);
+    if(t == 0){
         p->state = P_UNUSED;
-        t->parent = 0;
-        t->state = UNUSED;
-        t->tid = 0;
         return 0;
     }
-    sp = t->kstack + KSTACKSIZE;
-
-    // Leave room for trap frame.
-    sp -= sizeof *t->tf;
-    t->tf = (struct trapframe *) sp;
-
-    // Set up new context to start executing at forkret,
-    // which returns to trapret.
-    sp -= 4;
-    *(uint *) sp = (uint) trapret;
-
-    sp -= sizeof *t->context;
-    t->context = (struct context *) sp;
-    memset(t->context, 0, sizeof *t->context);
-    t->context->eip = (uint) forkret;
 
     return p;
 }
@@ -430,9 +358,14 @@ userinit(void) {
 
     p = allocproc();
 
-    // THERE HAS TO BE ONLY ONE THREAD IN THIS PROC, as it's freshly created.
-    t = &(p->threads[0]);
+    if(p == 0) panic("userinit: can't alloc proc");
 
+    // the first one should work, as it's freshly created. look just in case :)
+    for(t = &p->threads[0] ; t < &p->threads[NTHREAD] ; t++){
+        if(t->state == EMBRYO) break;
+    }
+
+    if(t->state != EMBRYO)  panic("userinit: can't alloc thread");
 
     initproc = p;
     if ((p->pgdir = setupkvm()) == 0)
@@ -504,7 +437,10 @@ fork(void) {
         return -1;
     }
 
-    nt = &(np->threads[0]);
+    // the first one should work, as it's freshly created. loop just in case :)
+    for(nt = &np->threads[0] ; nt < &np->threads[NTHREAD] ; nt++){
+        if(nt->state == EMBRYO) break;
+    }
 
     // Copy process state from proc.
     // if failed, clean up.
@@ -515,8 +451,10 @@ fork(void) {
         nt->parent = 0;
         nt->state = UNUSED;
         np->state = P_UNUSED;
+        np->state = P_UNUSED;
         return -1;
     }
+
     np->sz = curproc->sz;
     np->parent = curproc;
 
@@ -531,8 +469,6 @@ fork(void) {
 
     pid = np->pid;
 
-
-
     // Copy thread state from curthread to the main thread of the newly created proc
 
     // deep copy TF from original thread
@@ -542,15 +478,9 @@ fork(void) {
     // the new TF is a deep copy so no issues here
     nt->tf->eax = 0;
 
-
-    // copy open files between procs (IO is shared between threads)
-
-
     acquire(&ptable.lock);
-
-    // Setup the main thread of the newly created proc as RUNNALBE. the proc should be USED because of allocproc()
+    // Setup the main thread of the newly created proc as RUNNALBE. the proc should be P_USED because of allocproc()
     nt->state = RUNNABLE;
-
     release(&ptable.lock);
 
     return pid;
@@ -562,7 +492,6 @@ fork(void) {
 // Should also kill all of it's threads.
 // the last thread (e.g the one who called exit() ) will be marked as killed;
 // upon yielding or moving to userspace it will be fully killed
-
 // This function marks all active threads as killed and waits (pthread_join) all other threads.
 // Then, it marks this proc as P_ZOMBIE. the current thread will be zombifiyed only after leaving this function.
 // -->while CPU0 is running exit, CPU1 could be running some thread of this proc.
@@ -600,11 +529,11 @@ exit(void) {
     // if two threads try to kill the same proc,
     // the first to enter will mark all other threads as killed
     // it will be killed upon yielding
-    if (curthread->killed == 1) {
-        yield();
-        //close_thread(curthread); // yield already does that
-        return; // never gets here...
-    }
+//    if (curthread->killed == 1) {
+//        yield();
+//        //close_thread(curthread); // yield already does that
+//        return; // never gets here...
+//    }
 
     acquire(&ptable.lock);
 
