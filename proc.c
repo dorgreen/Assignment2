@@ -217,9 +217,56 @@ int kthread_join(int thread_id) {
     struct thread *t;
     struct proc *p;
     int found = 0;
-//    acquire(&ptable.lock);
-//    t = mythread();
-//    release(&ptable.lock);
+
+    for (p = &ptable.proc[0]; p < &ptable.proc[NPROC]; p++) {
+        // USING THE FACT [tid = pid * thread_constant + x]
+        // where x is no more than 16. could be done with just looking for it...
+        if (p->pid == (thread_id / thread_constant)) {
+            for (t = &p->threads[0]; t < &p->threads[NTHREAD]; t++) {
+                if (t->tid == thread_id) {
+                    found = 1;
+                    break;
+                }
+            }
+        }
+    }
+
+
+    if (!found) return -1; // No thread with that thread_id, so no reason to suspend
+
+
+    // SUSPEND UNTIL t HAS EXITED!
+    if (t->state != ZOMBIE && t->state != UNUSED) {
+        acquire(&ptable.lock);
+        sleep(t, &ptable.lock); // TODO: IS THIS THE RIGHT LOCK?!
+        release(&ptable.lock);
+    }
+
+
+    if (t->state == ZOMBIE) {
+        //t->tid = 0;
+        t->state = UNUSED;
+        t->context = 0;
+        t->chan = 0;
+        kfree(t->kstack);
+        t->kstack = 0;
+        return 0;
+    }// clean t if it's a zombie
+
+    if (t->state == UNUSED) {
+        return 0; // No reason to suspend if exited.
+    }
+
+
+    return -1;
+
+}
+
+// SAME AS JOIN, ASSUMES HOLDING PTABLE LOCK UPON ENTRANCE AND EXIT!
+int kthread_join1(int thread_id) {
+    struct thread *t;
+    struct proc *p;
+    int found = 0;
 
     for (p = &ptable.proc[0]; p < &ptable.proc[NPROC]; p++) {
         // USING THE FACT [tid = pid * thread_constant + x]
@@ -262,7 +309,6 @@ int kthread_join(int thread_id) {
     return -1;
 
 }
-
 
 // This functions handles closing a thread given by pointer
 // if it is the last thread of a non-zombie, also call exit.
@@ -434,6 +480,7 @@ fork(void) {
     // Allocate process.
     // also allocated the main thread of this proc, and sets it's EIP to be forkret.
     if ((np = allocproc()) == 0) {
+        cprintf("NO MORTE PORCC");
         return -1;
     }
 
@@ -538,8 +585,8 @@ exit(void) {
     acquire(&ptable.lock);
 
     // Wake parent who might be sleeping..
-    wakeup1(curthread);
     wakeup1(curproc->parent);
+
 
     // Mark all non-empty threads of this proc as Killed.
     // wake threads sleeping on this chan if needed.
@@ -564,20 +611,14 @@ exit(void) {
     }
 
 
-    //release(&ptable.lock);
+    // WAITS FOR ALL THREADS TO BE ZOMBIE or UNUSED
+    for (struct thread *t = &(curproc->threads[0]); t < &curproc->threads[NTHREAD]; t++) {
+        if (t != curthread && t->state != UNUSED && t->state != ZOMBIE) {
+            if(t->state == SLEEPING) t->state = RUNNABLE;
+            kthread_join1(t->tid); // Join also cleans the thread
+        }
+    }
 
-
-//    // WAITS FOR ALL THREADS TO BE ZOMBIE or UNUSED
-//    for (struct thread *t = &(curproc->threads[0]); t < &curproc->threads[NTHREAD]; t++) {
-//        if (t != curthread && t->state != UNUSED && t->state != ZOMBIE) {
-//            acquire(&ptable.lock);
-//            if(t->state == SLEEPING) t->state = RUNNABLE;
-//            kthread_join(t->tid); // Join also cleans the thread
-//            release(&ptable.lock);
-//        }
-//    }
-
-    //acquire(&ptable.lock);
     curproc->state = P_ZOMBIE;
     curthread->state = ZOMBIE; // current thread will be cleaned upon wait() on this proc
 
@@ -612,10 +653,7 @@ wait(void) {
                     // wait for this thread to exit.
                     if (t->state != UNUSED) {
                         if (t->state == SLEEPING) t->state = RUNNABLE;
-                        release(&ptable.lock);
-                        kthread_join(t->tid); // TODO: DOES NOT RESET AN ALREADY ZOMBIE THREAD!
-                        acquire(&ptable.lock);
-                        //sleep(t, &ptable.lock);
+                        kthread_join1(t->tid); // TODO: DOES NOT RESET AN ALREADY ZOMBIE THREAD!
                     }
                 }
 
@@ -661,10 +699,10 @@ wait(void) {
             release(&ptable.lock);
             return -1;
         }
-
         // Wait for children to exit.  (See wakeup1 call in proc_exit.)
-        sleep(curproc, &ptable.lock);  //DOC: wait-sleep #TODO: WHO WAKES THEM UP? CLOSING THE PROC?
+        sleep(curproc, &ptable.lock); //DOC: wait-sleep
     }
+    // we never get here
     release(&ptable.lock);
 }
 
