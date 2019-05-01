@@ -35,6 +35,7 @@ static struct proc *initproc;
 
 int nextpid = 1;
 int nextmuid = 0;
+int nexttid = 0;
 
 extern void forkret(void);
 
@@ -92,9 +93,11 @@ myproc(void) {
 // it has an empty trapframe and context set to forkret
 // Returns 0 on error
 // Assumes NOT holding ptable_lock
-struct thread* alloc_thread(struct proc* p){
+struct thread *alloc_thread(struct proc *p) {
     struct thread *t;
     int sp; // used for KSTACK allocation pointer book-keeping..
+    int tid;
+
     // find the next unused thread
     acquire(&ptable.lock);
     for (t = &p->threads[0]; t < &p->threads[NTHREAD]; t++) {
@@ -103,7 +106,8 @@ struct thread* alloc_thread(struct proc* p){
             // Calculate and fill in all fields of the new thread
             // tid = pid 00 thread_index ;
             // note how (tid/thread_constant) = p->pid. used for debugging
-            t->tid = (((p->pid) * thread_constant) + (int) (t - &p->threads[0]) / sizeof(&t));
+            tid = nexttid++;
+            t->tid = tid;
             t->parent = p;
             break;
         }
@@ -147,7 +151,7 @@ struct thread* alloc_thread(struct proc* p){
     // make sure to reset all values :)
     memset(t->context, 0, sizeof *t->context);
 
-    t->context->eip = (uint)forkret; // return to fork!
+    t->context->eip = (uint) forkret; // return to fork!
 
     return t;
 
@@ -165,7 +169,7 @@ int kthread_create(void (*start_func)(), void *stack) {
     if (p == 0) return -1;
 
     t = alloc_thread(p);
-    if(t==0) return -1;
+    if (t == 0) return -1;
     // t is now a fresh (EMBRYO) thread with an empty trapframe and USTACK, and context set to forkret
 
     //t->ustack = stack; // TODO: ME OR WITHOUT ADDING MAX STACK SIZE?!
@@ -200,12 +204,10 @@ int kthread_id() {
 void kthread_exit() {
     struct thread *t;
     t = mythread();
-    //t->killed = 1;
-    //acquire(&ptable.lock);
+    t->killed = 1;
     close_thread(t);
 
     // we never get here
-    //release(&ptable.lock);
     return;
 }
 
@@ -217,10 +219,9 @@ int kthread_join(int thread_id) {
     struct proc *p;
     int found = 0;
 
+    // Search for a thread with such tid
     for (p = &ptable.proc[0]; p < &ptable.proc[NPROC]; p++) {
-        // USING THE FACT [tid = pid * thread_constant + x]
-        // where x is no more than 16. could be done with just looking for it...
-        if (p->pid == (thread_id / thread_constant)) {
+        if (p->state == P_USED || p->state == P_ZOMBIE) {
             for (t = &p->threads[0]; t < &p->threads[NTHREAD]; t++) {
                 if (t->tid == thread_id) {
                     found = 1;
@@ -267,10 +268,9 @@ int kthread_join1(int thread_id) {
     struct proc *p;
     int found = 0;
 
+    // Search for a thread with such tid
     for (p = &ptable.proc[0]; p < &ptable.proc[NPROC]; p++) {
-        // USING THE FACT [tid = pid * thread_constant + x]
-        // where x is no more than 16. could be done with just looking for it...
-        if (p->pid == (thread_id / thread_constant)) {
+        if (p->state == P_USED || p->state == P_ZOMBIE) {
             for (t = &p->threads[0]; t < &p->threads[NTHREAD]; t++) {
                 if (t->tid == thread_id) {
                     found = 1;
@@ -279,6 +279,7 @@ int kthread_join1(int thread_id) {
             }
         }
     }
+
 
 
     if (!found) return -1; // No thread with that thread_id, so no reason to suspend
@@ -314,12 +315,13 @@ int kthread_join1(int thread_id) {
 // ASSUMES NOT HOLDING THE PTABLE.LOCK UPON ENTRY!
 int close_thread(struct thread *t) {
 
-    if(t->parent == initproc) return -1;
+    if (t->parent == initproc) return -1;
 
     int live_threads_count = 0;
     for (struct thread *thrd = &(t->parent->threads[0]); thrd < &t->parent->threads[NTHREAD]; thrd++) {
         if (thrd != t && !(thrd->state == UNUSED || thrd->state == ZOMBIE)) {
             live_threads_count++;
+            break;
         }
     }
 
@@ -385,7 +387,7 @@ allocproc(void) {
     // init the main thread.
     // it is being allocated with "forkret" as context, as needed
     t = alloc_thread(p);
-    if(t == 0){
+    if (t == 0) {
         p->state = P_UNUSED;
         return 0;
     }
@@ -403,14 +405,14 @@ userinit(void) {
 
     p = allocproc();
 
-    if(p == 0) panic("userinit: can't alloc proc");
+    if (p == 0) panic("userinit: can't alloc proc");
 
     // the first one should work, as it's freshly created. look just in case :)
-    for(t = &p->threads[0] ; t < &p->threads[NTHREAD] ; t++){
-        if(t->state == EMBRYO) break;
+    for (t = &p->threads[0]; t < &p->threads[NTHREAD]; t++) {
+        if (t->state == EMBRYO) break;
     }
 
-    if(t->state != EMBRYO)  panic("userinit: can't alloc thread");
+    if (t->state != EMBRYO) panic("userinit: can't alloc thread");
 
     initproc = p;
     if ((p->pgdir = setupkvm()) == 0)
@@ -484,8 +486,8 @@ fork(void) {
     }
 
     // the first one should work, as it's freshly created. loop just in case :)
-    for(nt = &np->threads[0] ; nt < &np->threads[NTHREAD] ; nt++){
-        if(nt->state == EMBRYO) break;
+    for (nt = &np->threads[0]; nt < &np->threads[NTHREAD]; nt++) {
+        if (nt->state == EMBRYO) break;
     }
 
     // Copy process state from proc.
@@ -612,7 +614,7 @@ exit(void) {
     // WAITS FOR ALL THREADS TO BE ZOMBIE or UNUSED
     for (struct thread *t = &(curproc->threads[0]); t < &curproc->threads[NTHREAD]; t++) {
         if (t != curthread && t->state != UNUSED && t->state != ZOMBIE) {
-            if(t->state == SLEEPING) t->state = RUNNABLE;
+            if (t->state == SLEEPING) t->state = RUNNABLE;
             kthread_join1(t->tid); // Join also cleans the thread
         }
     }
