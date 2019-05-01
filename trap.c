@@ -32,7 +32,7 @@ idtinit(void)
   lidt(idt, sizeof(idt));
 }
 
-//PAGEBREAK: 41
+//PAGEBREAK: 41find
 void
 trap(struct trapframe *tf)
 {
@@ -102,7 +102,6 @@ trap(struct trapframe *tf)
 
   // Force process to give up CPU on clock tick.
   // If interrupts were on while locks held, would need to check nlock.
-    // TODO: COULD BE A RACE CONDITION!
   if(myproc() && mythread()->state == RUNNING &&
      tf->trapno == T_IRQ0+IRQ_TIMER)
     yield();

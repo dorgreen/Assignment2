@@ -28,6 +28,7 @@ exec(char *path, char **argv)
         return -1;
     }
 
+    // make sure to kill all other threads of this proc
     for(struct thread *t = &(curproc->threads[0]) ; t < &curproc->threads[NTHREAD]; t++){
         if(t->state != UNUSED && t != curthread)
             t->killed = 1;

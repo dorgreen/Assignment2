@@ -100,6 +100,11 @@ struct thread* alloc_thread(struct proc* p){
     for (t = &p->threads[0]; t < &p->threads[NTHREAD]; t++) {
         if (t->state == UNUSED) {
             t->state = EMBRYO;
+            // Calculate and fill in all fields of the new thread
+            // tid = pid 00 thread_index ;
+            // note how (tid/thread_constant) = p->pid. used for debugging
+            t->tid = (((p->pid) * thread_constant) + (int) (t - &p->threads[0]) / sizeof(&t));
+            t->parent = p;
             break;
         }
     }
@@ -109,18 +114,12 @@ struct thread* alloc_thread(struct proc* p){
         return 0; // NO UNUSED THREADS IN OUR PROC!
 
 
-    // Calculate and fill in all fields of the new thread
-    // tid = pid 00 thread_index ;
-    // note how (tid/thread_constant) = p->pid. used for debugging
-    t->tid = (((p->pid) * thread_constant) + (int) (t - &p->threads[0]) / sizeof(&t));
-    t->parent = p;
-
     // allocate kstack and rollback-fail if unable to do so
     if ((t->kstack = kalloc()) == 0) {
-        p->state = P_UNUSED;
         t->parent = 0;
         t->state = UNUSED;
         t->tid = 0;
+        t->parent = 0;
         return 0;
     }
 
@@ -135,7 +134,7 @@ struct thread* alloc_thread(struct proc* p){
     //set tf pointer @ kernel stack
     t->tf = (struct trapframe *) sp;
     // make sure to reset all values :)
-    memset(t->tf, 0, sizeof *t->tf);
+    //memset(t->tf, 0, sizeof *t->tf);
 
     // set new context to resume on trapret
     sp -= 4;
@@ -244,7 +243,7 @@ int kthread_join(int thread_id) {
 
 
     if (t->state == ZOMBIE) {
-        //t->tid = 0;
+        t->tid = 0;
         t->state = UNUSED;
         t->context = 0;
         t->chan = 0;
@@ -292,7 +291,7 @@ int kthread_join1(int thread_id) {
 
 
     if (t->state == ZOMBIE) {
-        //t->tid = 0;
+        t->tid = 0;
         t->state = UNUSED;
         t->context = 0;
         t->chan = 0;
@@ -498,7 +497,6 @@ fork(void) {
         nt->parent = 0;
         nt->state = UNUSED;
         np->state = P_UNUSED;
-        np->state = P_UNUSED;
         return -1;
     }
 
@@ -545,9 +543,9 @@ fork(void) {
 //    the active thread will be marked as killed=1, and will soon be killed.
 void
 exit(void) {
-    acquire(&ptable.lock);
+    //acquire(&ptable.lock);
     struct thread *curthread = mythread();
-    release(&ptable.lock);
+    //release(&ptable.lock);
     struct proc *curproc = curthread->parent;
     struct proc *p;
 
