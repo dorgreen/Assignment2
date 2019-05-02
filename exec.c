@@ -23,8 +23,8 @@ exec(char *path, char **argv)
     // This makes sure we won't exec and exit at the same time
     capture_ptable_lock();
     if (mythread()->killed == 1){
-        kthread_exit(curthread->tid);
         release_ptable_lock();
+        yield();
         return -1;
     }
 
@@ -38,16 +38,18 @@ exec(char *path, char **argv)
     }
     release_ptable_lock();
 
-    // forcefully kill the unkilled...
-    for(struct thread *t = &(curproc->threads[0]) ; t < &curproc->threads[NTHREAD]; t++){
-        if(t->state != UNUSED && t->state != ZOMBIE && t != curthread && t->state != RUNNING){
-            t->tf = 0;
-            t->killed = 0;
-            t->state = ZOMBIE;
-            wakeup(t); // wake threads waiting on this thread e.g kthread_join
-            //close_thread(t);
-        }
-    }
+//    // forcefully kill the unkilled...
+//    for(struct thread *t = &(curproc->threads[0]) ; t < &curproc->threads[NTHREAD]; t++){
+//        if(t->state != UNUSED && t->state != ZOMBIE && t != curthread && t->state != RUNNING){
+//            kfree(t->kstack);
+//            t->kstack = 0;
+//            t->tf = 0;
+//            t->killed = 0;
+//            t->state = ZOMBIE;
+//            wakeup(t); // wake threads waiting on this thread e.g kthread_join
+//            //close_thread(t);
+//        }
+//    }
 
     for(struct thread *t = &(curproc->threads[0]) ; t < &curproc->threads[NTHREAD]; t++){
         if(t->state != UNUSED && t != curthread){
