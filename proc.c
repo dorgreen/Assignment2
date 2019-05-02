@@ -174,6 +174,7 @@ int kthread_create(void (*start_func)(), void *stack) {
 
     //t->ustack = stack; // TODO: ME OR WITHOUT ADDING MAX STACK SIZE?!
     t->ustack = stack + MAX_STACK_SIZE; // trusting the user it is of the right size, and allocated\deallocated properly
+    // Stack points to the END of the stack as it grows backwards...
 
     // deep copy this thread's TF to the new thread
     *(t->tf) = *(this_thread->tf);
@@ -653,7 +654,7 @@ wait(void) {
                     // wait for this thread to exit.
                     if (t->state != UNUSED) {
                         if (t->state == SLEEPING) t->state = RUNNABLE;
-                        kthread_join1(t->tid); // TODO: DOES NOT RESET AN ALREADY ZOMBIE THREAD!
+                        kthread_join1(t->tid);
                     }
                 }
 
@@ -670,25 +671,25 @@ wait(void) {
 
                 // Forcefully decallocate mutexs allocated by this dead proc, if there are any
                 // TODO: UNCOMMENT!!!!
-//                kthread_mutex_t *mu;
-//
-//                acquire(&mutable.lock);
-//                for (mu = &(mutable.mutex[0]); mu < &(mutable.mutex[0]); mu++) {
-//                    // Search for a mutex that was "ghosted" by this dead proc
-//                        if (mu->state != M_UNUSED && mu->owning_proc == p) {
-//                        // Dealloc this mutex
-//                        // TODO: should wakeup waiting threads here?
-//                        mu->owning_proc = 0;
-//                        for (int j = 0; j < NTHREAD; j++) {
-//                            mu->waiting_threads[j] = 0;
-//                        }
-//                        mu->locking_thread = 0;
-//                        mu->owning_proc = 0;
-//                        mu->id = 0;
-//                        mu->state = UNUSED;
-//                    }
-//                }
-//                release(&mutable.lock);
+                kthread_mutex_t *mu;
+
+                acquire(&mutable.lock);
+                for (mu = &(mutable.mutex[0]); mu < &(mutable.mutex[MAX_MUTEXES]); mu++) {
+                    // Search for a mutex that was "ghosted" by this dead proc
+                        if (mu->state != M_UNUSED && mu->owning_proc == p) {
+                        // Dealloc this mutex
+                        // TODO: should wakeup waiting threads here?
+                        mu->owning_proc = 0;
+                        for (int j = 0; j < NTHREAD; j++) {
+                            mu->waiting_threads[j] = 0;
+                        }
+                        mu->locking_thread = 0;
+                        mu->owning_proc = 0;
+                        mu->id = 0;
+                        mu->state = UNUSED;
+                    }
+                }
+                release(&mutable.lock);
                 release(&ptable.lock);
                 return pid;
             }
@@ -988,17 +989,13 @@ procdump(void) {
 int kthread_mutex_alloc() {
     kthread_mutex_t *mu;
     struct proc *this_proc;
-
-    acquire(&ptable.lock);
     this_proc = myproc();
-    release(&ptable.lock);
 
     acquire(&mutable.lock);
-    for (mu = &(mutable.mutex[0]); mu < &(mutable.mutex[0]); mu++) {
+    for (mu = &(mutable.mutex[0]); mu < &(mutable.mutex[MAX_MUTEXES]); mu++) {
         if (mu->state == M_UNUSED) {
             // Allocate this mutex
             mu->state = M_UNLOCKED;
-            release(&mutable.lock); // no need to hog the mutable; just prevent double-allocation
             mu->owning_proc = this_proc;
             initlock(&mu->lock, "mulock");
             for (int j = 0; j < NTHREAD; j++) {
@@ -1007,6 +1004,8 @@ int kthread_mutex_alloc() {
 
             nextmuid++;
             mu->id = nextmuid;
+
+            release(&mutable.lock); // no need to hog the mutable; just prevent double-allocation
             return mu->id;
         }
     }
@@ -1020,12 +1019,10 @@ int kthread_mutex_dealloc(int mutex_id) {
     kthread_mutex_t *mu;
     struct proc *this_proc;
 
-    acquire(&ptable.lock);
     this_proc = myproc();
-    release(&ptable.lock);
 
     acquire(&mutable.lock);
-    for (mu = &(mutable.mutex[0]); mu < &(mutable.mutex[0]); mu++) {
+    for (mu = &(mutable.mutex[0]); mu < &(mutable.mutex[MAX_MUTEXES]); mu++) {
         // Search for a mutex with that id
         if (mu->id == mutex_id) {
             // If it's locked, it can't be deallocated yet
@@ -1044,7 +1041,7 @@ int kthread_mutex_dealloc(int mutex_id) {
             mu->locking_thread = 0;
             mu->owning_proc = 0;
             mu->id = 0;
-            mu->state = UNUSED;
+            mu->state = M_UNUSED;
             release(&mutable.lock);
             return 0;
         }
@@ -1073,12 +1070,12 @@ int kthread_mutex_lock(int mutex_id) {
 
     acquire(&mutable.lock);
     // Iterate over all mutexs, looking for one with the right mutex_id
-    for (mu = &(mutable.mutex[0]); mu < &(mutable.mutex[0]); mu++) {
+    for (mu = &(mutable.mutex[0]); mu < &(mutable.mutex[MAX_MUTEXES]); mu++) {
         if (mu->state != M_UNUSED && mu->id == mutex_id) {
 
-            release(&mutable.lock);
             // Only threads of the same proc could lock\unlock this mutex
             if (mu->owning_proc != this_thread->parent) {
+                release(&mutable.lock);
                 return -1;
             }
 
@@ -1087,6 +1084,7 @@ int kthread_mutex_lock(int mutex_id) {
                 mu->state = M_LOCKED;
                 acquire(&mu->lock);
                 mu->locking_thread = this_thread;
+                release(&mutable.lock);
                 return 0;
             }
 
@@ -1102,6 +1100,8 @@ int kthread_mutex_lock(int mutex_id) {
                         break;
                     }
                 }
+
+                release(&mutable.lock);
                 sleep(this_thread, &mu->lock); // This moves the thread to be blocked
                 return 0;
             }
@@ -1118,14 +1118,11 @@ int kthread_mutex_unlock(int mutex_id) {
     struct thread *this_thread;
     //struct thread *t;
 
-    acquire(&ptable.lock);
     this_thread = mythread();
-    release(&ptable.lock);
-
 
     acquire(&mutable.lock);
     // Iterate over all mutexs, looking for one with the right mutex_id
-    for (mu = &(mutable.mutex[0]); mu < &(mutable.mutex[0]); mu++) {
+    for (mu = &(mutable.mutex[0]); mu < &(mutable.mutex[MAX_MUTEXES]); mu++) {
         if (mu->state != M_UNUSED && mu->id == mutex_id) {
 
             // ONLY THE LOCKING THREAD CAN RELEASE!
