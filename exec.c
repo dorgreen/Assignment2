@@ -30,10 +30,30 @@ exec(char *path, char **argv)
 
     // make sure to kill all other threads of this proc
     for(struct thread *t = &(curproc->threads[0]) ; t < &curproc->threads[NTHREAD]; t++){
-        if(t->state != UNUSED && t != curthread)
+        if(t->state != UNUSED && t != curthread){
             t->killed = 1;
+            if(t->state == SLEEPING) t->state = RUNNABLE;
+        }
+
     }
     release_ptable_lock();
+
+    // forcefully kill the unkilled...
+    for(struct thread *t = &(curproc->threads[0]) ; t < &curproc->threads[NTHREAD]; t++){
+        if(t->state != UNUSED && t->state != ZOMBIE && t != curthread && t->state != RUNNING){
+            t->tf = 0;
+            t->killed = 0;
+            t->state = ZOMBIE;
+            wakeup(t); // wake threads waiting on this thread e.g kthread_join
+            //close_thread(t);
+        }
+    }
+
+    for(struct thread *t = &(curproc->threads[0]) ; t < &curproc->threads[NTHREAD]; t++){
+        if(t->state != UNUSED && t != curthread){
+            kthread_join(t->tid);
+        }
+    }
 
 
   begin_op();
@@ -111,12 +131,6 @@ exec(char *path, char **argv)
   safestrcpy(curproc->name, last, sizeof(curproc->name));
 
   // Commit to the user image.
-//    c = mycpu();
-//    c->proc = curproc;
-//    c->thrd = curthread;
-
-
-
   oldpgdir = curproc->pgdir;
   curproc->pgdir = pgdir;
   curproc->sz = sz;

@@ -215,7 +215,7 @@ void kthread_exit() {
 //        argument thread id, terminates. If the thread has already exited, execution should not be suspended. If
 //        successful, the function returns zero. Otherwise, -1 should be returned to indicate an error.
 int kthread_join(int thread_id) {
-    struct thread *t;
+    struct thread *t = 0;
     struct proc *p;
     int found = 0;
 
@@ -231,7 +231,7 @@ int kthread_join(int thread_id) {
         }
     }
 
-
+    if(found && t == mythread()) cprintf("KTHREAD_JOIN ON SELF!");
     if (!found) return -1; // No thread with that thread_id, so no reason to suspend
 
 

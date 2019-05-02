@@ -131,6 +131,7 @@ int             kthread_mutex_alloc();
 int             kthread_mutex_dealloc(int mutex_id);
 int             kthread_mutex_lock(int mutex_id);
 int             kthread_mutex_unlock(int mutex_id);
+int             close_thread(struct thread*);
 
 
 // swtch.S
