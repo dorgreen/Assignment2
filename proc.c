@@ -230,9 +230,7 @@ int kthread_join(int thread_id) {
         }
     }
 
-    acquire(&ptable.lock);
     struct thread *this_thread = mythread();
-    release(&ptable.lock);
 
     if(found && t == this_thread){
         cprintf("KTHREAD_JOIN ON SELF!");
@@ -342,6 +340,7 @@ int close_thread(struct thread *t) {
         exit();
     } else {
         t->state = ZOMBIE;
+        t->killed = 0;
         wakeup(t); // wake threads waiting on this thread e.g kthread_join
 
         acquire(&ptable.lock);
