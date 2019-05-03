@@ -13,15 +13,12 @@ struct {
     struct proc proc[NPROC];
 } ptable;
 
-enum mutex_states {
-    M_UNUSED, M_UNLOCKED, M_LOCKED
-};
 typedef struct kthread_mutex_t {
     enum mutex_states state;
     int id;
     struct proc *owning_proc; // only threads of this proc can lock it
     struct thread *locking_thread; // only the thread who locked it
-    struct thread *waiting_threads[NTHREAD]; // insert from high index, release from low index
+    struct thread *waiting_thread;
     struct spinlock lock;
 } kthread_mutex_t;
 
@@ -34,7 +31,7 @@ struct {
 static struct proc *initproc;
 
 int nextpid = 1;
-int nextmuid = 0;
+int nextmuid = 1;
 int nexttid = 0;
 
 extern void forkret(void);
@@ -129,6 +126,7 @@ struct thread *alloc_thread(struct proc *p) {
 
     t->chan = 0;
     t->killed = 0;
+    t->mutex_waitlist_link = 0;
 
 
     sp = (uint) t->kstack + KSTACKSIZE;
@@ -232,7 +230,11 @@ int kthread_join(int thread_id) {
         }
     }
 
-    if(found && t == mythread()) cprintf("KTHREAD_JOIN ON SELF!");
+    acquire(&ptable.lock);
+    struct thread *this_thread = mythread();
+    release(&ptable.lock);
+
+    if(found && t == this_thread) cprintf("KTHREAD_JOIN ON SELF!");
     if (!found) return -1; // No thread with that thread_id, so no reason to suspend
 
 
@@ -245,13 +247,15 @@ int kthread_join(int thread_id) {
 
 
     if (t->state == ZOMBIE) {
+        t->ustack = 0;
         t->tid = 0;
         t->state = UNUSED;
         t->context = 0;
         t->chan = 0;
-        kfree(t->kstack);
-        t->kstack = 0;
+//        kfree(t->kstack);
+//        t->kstack = 0;
         return 0;
+        t->mutex_waitlist_link = 0;
     }// clean t if it's a zombie
 
     if (t->state == UNUSED) {
@@ -299,6 +303,7 @@ int kthread_join1(int thread_id) {
         t->chan = 0;
         kfree(t->kstack);
         t->kstack = 0;
+        t->mutex_waitlist_link = 0;
         return 0;
     }// clean t if it's a zombie
 
@@ -333,9 +338,6 @@ int close_thread(struct thread *t) {
     if (live_threads_count == 0 && t->parent->state == P_USED) {
         exit();
     } else {
-
-        t->tf = 0;
-        t->killed = 0;
         t->state = ZOMBIE;
         wakeup(t); // wake threads waiting on this thread e.g kthread_join
 
@@ -678,11 +680,9 @@ wait(void) {
                     // Search for a mutex that was "ghosted" by this dead proc
                         if (mu->state != M_UNUSED && mu->owning_proc == p) {
                         // Dealloc this mutex
-                        // TODO: should wakeup waiting threads here?
+                        // TODO: No need to wakeup waiting threads here?
                         mu->owning_proc = 0;
-                        for (int j = 0; j < NTHREAD; j++) {
-                            mu->waiting_threads[j] = 0;
-                        }
+                        mu->waiting_thread = 0;
                         mu->locking_thread = 0;
                         mu->owning_proc = 0;
                         mu->id = 0;
@@ -985,27 +985,61 @@ procdump(void) {
     }
 }
 
+// The mutex holds the last (newest to join the waitlist) thread.
+// In order to get to the first (oldest to join the waitlist) we must traverse the list
+// the list is at most of len NTHREADS-1
+struct thread* kthread_mutex_pop_next_waiting_thread(kthread_mutex_t *mu){
+    struct thread *t;
+    struct thread *old;
+
+    t = mu->waiting_thread;
+    old = t;
+
+    if(t == 0) return 0 ; // No thread is waiting!
+
+    // Advance t to be the oldest link in the chain
+    while(t->mutex_waitlist_link != 0){
+        old = t;
+        t = t->mutex_waitlist_link;
+    }
+    // by this line, t holds the oldest link in the chain
+
+    // there is only t in the chain (the loop never entered)
+    if(t == old){
+        mu->waiting_thread = 0;
+    }
+        // there was some other thread after t in the chain, mark it as the oldest
+    else{
+        old -> mutex_waitlist_link = 0;
+    }
+
+    return t;
+}
 
 int kthread_mutex_alloc() {
     kthread_mutex_t *mu;
     struct proc *this_proc;
+    acquire(&ptable.lock);
     this_proc = myproc();
+    release(&ptable.lock);
+
+    int my_muid;
 
     acquire(&mutable.lock);
     for (mu = &(mutable.mutex[0]); mu < &(mutable.mutex[MAX_MUTEXES]); mu++) {
         if (mu->state == M_UNUSED) {
             // Allocate this mutex
             mu->state = M_UNLOCKED;
-            mu->owning_proc = this_proc;
-            initlock(&mu->lock, "mulock");
-            for (int j = 0; j < NTHREAD; j++) {
-                mu->waiting_threads[j] = 0;
-            }
-
-            nextmuid++;
-            mu->id = nextmuid;
-
+            my_muid = nextmuid++;
+            cprintf("alloc: %d\n", my_muid); // TODO DEBUG ONLY!!!
             release(&mutable.lock); // no need to hog the mutable; just prevent double-allocation
+
+            mu->id = my_muid;
+            mu->owning_proc = this_proc;
+            mu->locking_thread = 0;
+            mu->waiting_thread = 0; // No thread is waiting for a fresh mutex :)
+            initlock(&mu->lock, "mulock");
+            cprintf("return: %d\n", my_muid); // TODO DEBUG ONLY!!!
             return mu->id;
         }
     }
@@ -1019,7 +1053,9 @@ int kthread_mutex_dealloc(int mutex_id) {
     kthread_mutex_t *mu;
     struct proc *this_proc;
 
+    acquire(&ptable.lock);
     this_proc = myproc();
+    release(&ptable.lock);
 
     acquire(&mutable.lock);
     for (mu = &(mutable.mutex[0]); mu < &(mutable.mutex[MAX_MUTEXES]); mu++) {
@@ -1035,10 +1071,8 @@ int kthread_mutex_dealloc(int mutex_id) {
             // Dealloc this mutex
             // TODO: should wakeup waiting threads here?
             mu->owning_proc = 0;
-            for (int j = 0; j < NTHREAD; j++) {
-                mu->waiting_threads[j] = 0;
-            }
-            mu->locking_thread = 0;
+            mu->waiting_thread = 0; // just making sure
+            mu->locking_thread = 0; // just making sure
             mu->owning_proc = 0;
             mu->id = 0;
             mu->state = M_UNUSED;
@@ -1058,14 +1092,15 @@ int kthread_mutex_dealloc(int mutex_id) {
 int kthread_mutex_lock(int mutex_id) {
     kthread_mutex_t *mu;
     struct thread *this_thread;
+    int found = 0;
 
     // mutex_id could only be 1 or more
     if (mutex_id < 1)
         return -1;
 
-    acquire(&ptable.lock);
+    //acquire(&ptable.lock);
     this_thread = mythread();
-    release(&ptable.lock);
+    //release(&ptable.lock);
 
 
     acquire(&mutable.lock);
@@ -1078,50 +1113,58 @@ int kthread_mutex_lock(int mutex_id) {
                 release(&mutable.lock);
                 return -1;
             }
-
-            // Normal case; locking an unlock mutex
-            if (mu->state == M_UNLOCKED) {
-                mu->state = M_LOCKED;
-                acquire(&mu->lock);
-                mu->locking_thread = this_thread;
-                release(&mutable.lock);
-                return 0;
-            }
-
-                // Other normal case; locking an already-lock mutex
-                // put our thread in queue and then sleep
-            else if (mu->state == M_LOCKED) {
-
-                // find the next slot to wait in.
-                // from high index to low. we release them from low to high.
-                for (int i = NTHREAD - 1; i > -1; i--) {
-                    if (mu->waiting_threads[i] == 0) {
-                        mu->waiting_threads[i] = this_thread;
-                        break;
-                    }
-                }
-
-                release(&mutable.lock);
-                sleep(this_thread, &mu->lock); // This moves the thread to be blocked
-                return 0;
-            }
-
+            found = 1;
+            acquire(&mu->lock);
+            break;
         }
     }
-
+    // prevent dual alloc\dealloc\lock...
+    // TODO: Maybe aqquire mu->lock here and release if !found?
     release(&mutable.lock);
-    return -1; // No mutex with that id; couldn't lock.
+    if(!found){
+        return -1;
+    }
+
+    // If we got here, it means we found a mutex with that ID and a correct parent.
+    // HOLDING mu->lock !!!!!
+
+    // Normal case; locking an unlocked mutex
+    if (mu->state == M_UNLOCKED) {
+        mu->state = M_LOCKED;
+        mu->locking_thread = this_thread;
+        release(&mu->lock);
+        return 0;
+    }
+
+        // Other normal case; locking an already-locked mutex
+        // put our thread in queue and then sleep
+    else if (mu->state == M_LOCKED) {
+
+        // add current thread to waiting list for this mutex (add to tail)
+        // if lock is freed right now, this_thread is LAST in line
+        this_thread->mutex_waitlist_link = mu->waiting_thread;
+        mu->waiting_thread = this_thread;
+        sleep(this_thread, &mu->lock); // This moves the thread to be blocked
+        release(&mu->lock);
+        return 0;
+    }
+
+    // we never get here...
+    release(&mu->lock);
+    return -1; // some error
 }
 
 int kthread_mutex_unlock(int mutex_id) {
     kthread_mutex_t *mu;
     struct thread *this_thread;
-    //struct thread *t;
+    struct thread *t;
+    int found = 0;
 
     this_thread = mythread();
 
     acquire(&mutable.lock);
     // Iterate over all mutexs, looking for one with the right mutex_id
+    // acquire the mutex's lock if found.
     for (mu = &(mutable.mutex[0]); mu < &(mutable.mutex[MAX_MUTEXES]); mu++) {
         if (mu->state != M_UNUSED && mu->id == mutex_id) {
 
@@ -1132,25 +1175,37 @@ int kthread_mutex_unlock(int mutex_id) {
                 return -1;
             }
 
-            // Normal case
-            // Unlock the mutex and wake thread(s) sleeping on it
-            if (mu->state == M_LOCKED) {
-                mu->state = M_UNLOCKED;
-                release(&mutable.lock);
-
-                // get the next thread to wake
-                for (int i = 0; i < NTHREAD; i++) {
-                    if (mu->waiting_threads[i] != 0) {
-                        wakeup(mu->waiting_threads[i]);
-                        return 1;
-                    }
-                }
-                return 1; // If we got here, there were no threads waiting
-            }
+            // FOUND! hold it to sync...
+            found = 1;
+            acquire(&mu->lock);
+            break;
         }
     }
+    release(&mutable.lock);
+    if(!found) return -1; // NO SUCH MUTEX!
 
-    return -1; // couldn't unlock
+    // By this line, mu is a LOCKED mutex, and this_thread is legal to UNLOCK it
+    // HOLDING THE LOCK for mu.
+
+    // get the next thread to wake, if any
+    t = kthread_mutex_pop_next_waiting_thread(mu);
+
+    // no threads are waiting! just clear the lock :)
+    if(t == 0){
+        mu->locking_thread = 0;
+        mu->waiting_thread = 0; // already done by pop_next_waiting thread
+        mu->state = M_UNLOCKED;
+    }
+
+        // Some thread(s) are waiting. t is the next after our thread
+        // Hand the lock to t :)
+    else{
+        mu->locking_thread = t;
+        wakeup(t);
+    }
+
+    release(&mu->lock);
+    return 0;
 }
 
 

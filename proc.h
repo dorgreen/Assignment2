@@ -13,7 +13,6 @@ struct cpu {
 };
 
 #define NTHREAD 16 // TASK2.1
-#define thread_constant 1000 // used to create thread ID. threadid = father_pid*thread_constnt + thread index
 
 
 
@@ -39,8 +38,11 @@ struct context {
   uint eip;
 };
 
+
 enum procstate { P_UNUSED, P_USED, P_ZOMBIE };
 enum threadstate { UNUSED, EMBRYO, SLEEPING, RUNNABLE, RUNNING, ZOMBIE};
+enum mutex_states { M_UNUSED, M_UNLOCKED, M_LOCKED };
+
 
 struct thread {
     char *kstack;                // Bottom of kernel stack for this thread
@@ -52,7 +54,7 @@ struct thread {
     struct context *context;     // swtch() here to run process // MOVE TO THREAD, each has it's own registers...
     void *chan;                  // If non-zero, sleeping on chan // MOVE TO THREAD, blocking calls should only hold this thread
     int killed;                  // If non-zero, have been killed // SHOULD BE IN BOTH?
-
+    struct thread* mutex_waitlist_link; // Mostly NULL; holds the next thread waiting on mutex
 };
 
 // Per-process state
@@ -67,6 +69,8 @@ struct proc {
   char name[16];               // Process name (debugging)
   struct thread threads[NTHREAD]; // TASK2 HOLDS THREADS FOR THIS PROC ; NOT A MACRO AS IT HURTS COMPILATION
 };
+
+
 
 
 // Process memory is laid out contiguously, low addresses first:
