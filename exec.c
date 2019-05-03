@@ -38,6 +38,19 @@ exec(char *path, char **argv)
     }
     release_ptable_lock();
 
+    // BUSY-WAITS FOR ALL THREADS TO BE ZOMBIE or UNUSED
+    int threads_alive = 1;
+    while(threads_alive){
+        threads_alive = 0;
+        for (struct thread *t = &(curproc->threads[0]); t < &curproc->threads[NTHREAD]; t++) {
+            if (t != curthread && t->state != UNUSED && t->state != ZOMBIE) {
+                if (t->state == SLEEPING) t->state = RUNNABLE;
+                threads_alive++;
+            }
+            if(t->state == ZOMBIE) kthread_join(t->tid);
+        }
+    }
+
 //    // forcefully kill the unkilled...
 //    for(struct thread *t = &(curproc->threads[0]) ; t < &curproc->threads[NTHREAD]; t++){
 //        if(t->state != UNUSED && t->state != ZOMBIE && t != curthread && t->state != RUNNING){
@@ -50,12 +63,6 @@ exec(char *path, char **argv)
 //            //close_thread(t);
 //        }
 //    }
-
-    for(struct thread *t = &(curproc->threads[0]) ; t < &curproc->threads[NTHREAD]; t++){
-        if(t->state != UNUSED && t != curthread){
-            kthread_join(t->tid);
-        }
-    }
 
 
   begin_op();

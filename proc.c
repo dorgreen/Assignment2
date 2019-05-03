@@ -234,7 +234,10 @@ int kthread_join(int thread_id) {
     struct thread *this_thread = mythread();
     release(&ptable.lock);
 
-    if(found && t == this_thread) cprintf("KTHREAD_JOIN ON SELF!");
+    if(found && t == this_thread){
+        cprintf("KTHREAD_JOIN ON SELF!");
+        return -1;
+    }
     if (!found) return -1; // No thread with that thread_id, so no reason to suspend
 
 
@@ -252,8 +255,8 @@ int kthread_join(int thread_id) {
         t->state = UNUSED;
         t->context = 0;
         t->chan = 0;
-//        kfree(t->kstack);
-//        t->kstack = 0;
+        kfree(t->kstack);
+        t->kstack = 0;
         return 0;
         t->mutex_waitlist_link = 0;
     }// clean t if it's a zombie
@@ -614,13 +617,37 @@ exit(void) {
     }
 
 
-    // WAITS FOR ALL THREADS TO BE ZOMBIE or UNUSED
-    for (struct thread *t = &(curproc->threads[0]); t < &curproc->threads[NTHREAD]; t++) {
-        if (t != curthread && t->state != UNUSED && t->state != ZOMBIE) {
-            if (t->state == SLEEPING) t->state = RUNNABLE;
-            kthread_join1(t->tid); // Join also cleans the thread
+    // BUSY-WAITS FOR ALL THREADS TO BE ZOMBIE or UNUSED
+    int threads_alive = 1;
+    while(threads_alive){
+        threads_alive = 0;
+        for (struct thread *t = &(curproc->threads[0]); t < &curproc->threads[NTHREAD]; t++) {
+            if (t != curthread && t->state != UNUSED && t->state != ZOMBIE) {
+                if (t->state == SLEEPING) t->state = RUNNABLE;
+                threads_alive++;
+            }
         }
     }
+
+
+    // Forcefully decallocate mutexs allocated by this dead proc, if there are any
+    kthread_mutex_t *mu;
+
+    acquire(&mutable.lock);
+    for (mu = &(mutable.mutex[0]); mu < &(mutable.mutex[MAX_MUTEXES]); mu++) {
+        // Search for a mutex that was "ghosted" by this dead proc
+        if (mu->state != M_UNUSED && mu->owning_proc == p) {
+            // Dealloc this mutex
+            // No need to wakeup waiting threads here as they were all dead by now..
+            mu->owning_proc = 0;
+            mu->waiting_thread = 0;
+            mu->locking_thread = 0;
+            mu->owning_proc = 0;
+            mu->id = 0;
+            mu->state = UNUSED;
+        }
+    }
+    release(&mutable.lock);
 
     curproc->state = P_ZOMBIE;
     curthread->state = ZOMBIE; // current thread will be cleaned upon wait() on this proc
@@ -669,27 +696,7 @@ wait(void) {
                 p->sz = 0;
                 p->state = P_UNUSED;
                 p->pid = 0;
-
-
-                // Forcefully decallocate mutexs allocated by this dead proc, if there are any
-                // TODO: UNCOMMENT!!!!
-                kthread_mutex_t *mu;
-
-                acquire(&mutable.lock);
-                for (mu = &(mutable.mutex[0]); mu < &(mutable.mutex[MAX_MUTEXES]); mu++) {
-                    // Search for a mutex that was "ghosted" by this dead proc
-                        if (mu->state != M_UNUSED && mu->owning_proc == p) {
-                        // Dealloc this mutex
-                        // TODO: No need to wakeup waiting threads here?
-                        mu->owning_proc = 0;
-                        mu->waiting_thread = 0;
-                        mu->locking_thread = 0;
-                        mu->owning_proc = 0;
-                        mu->id = 0;
-                        mu->state = UNUSED;
-                    }
-                }
-                release(&mutable.lock);
+                // Mutexes were DEALLOCAED when the proc died @ exit()
                 release(&ptable.lock);
                 return pid;
             }
@@ -1031,15 +1038,15 @@ int kthread_mutex_alloc() {
             // Allocate this mutex
             mu->state = M_UNLOCKED;
             my_muid = nextmuid++;
-            cprintf("alloc: %d\n", my_muid); // TODO DEBUG ONLY!!!
-            release(&mutable.lock); // no need to hog the mutable; just prevent double-allocation
+            //cprintf("alloc: %d\n", my_muid); // TODO DEBUG ONLY!!!
 
             mu->id = my_muid;
             mu->owning_proc = this_proc;
             mu->locking_thread = 0;
             mu->waiting_thread = 0; // No thread is waiting for a fresh mutex :)
             initlock(&mu->lock, "mulock");
-            cprintf("return: %d\n", my_muid); // TODO DEBUG ONLY!!!
+            //cprintf("return: %d\n", my_muid); // TODO DEBUG ONLY!!!
+            release(&mutable.lock); // no need to hog the mutable; just prevent double-allocation
             return mu->id;
         }
     }
@@ -1069,9 +1076,8 @@ int kthread_mutex_dealloc(int mutex_id) {
             }
 
             // Dealloc this mutex
-            // TODO: should wakeup waiting threads here?
             mu->owning_proc = 0;
-            mu->waiting_thread = 0; // just making sure
+            mu->waiting_thread = 0; // just making sure. None should wait, as it is unlocked
             mu->locking_thread = 0; // just making sure
             mu->owning_proc = 0;
             mu->id = 0;
@@ -1140,6 +1146,11 @@ int kthread_mutex_lock(int mutex_id) {
         // put our thread in queue and then sleep
     else if (mu->state == M_LOCKED) {
 
+        // Can't lock a lock you already hold!
+        if(mu->locking_thread == this_thread){
+            release(&mu->lock);
+            return -1;
+        }
         // add current thread to waiting list for this mutex (add to tail)
         // if lock is freed right now, this_thread is LAST in line
         this_thread->mutex_waitlist_link = mu->waiting_thread;
