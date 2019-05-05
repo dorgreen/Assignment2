@@ -6,6 +6,7 @@
         The API of the KLT package
  ********************************/
 
+
 int kthread_create(void (*start_func)(), void* stack);
 int kthread_id();
 void kthread_exit();

@@ -126,7 +126,7 @@ void            release_ptable_lock();
 int             kthread_create();
 int             kthread_id();
 void            kthread_exit();
-int             kthread_join();
+int             kthread_join(int tid);
 int             kthread_mutex_alloc();
 int             kthread_mutex_dealloc(int mutex_id);
 int             kthread_mutex_lock(int mutex_id);

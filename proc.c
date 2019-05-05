@@ -170,7 +170,6 @@ int kthread_create(void (*start_func)(), void *stack) {
     if (t == 0) return -1;
     // t is now a fresh (EMBRYO) thread with an empty trapframe and USTACK, and context set to forkret
 
-    //t->ustack = stack; // TODO: ME OR WITHOUT ADDING MAX STACK SIZE?!
     t->ustack = stack + MAX_STACK_SIZE; // trusting the user it is of the right size, and allocated\deallocated properly
     // Stack points to the END of the stack as it grows backwards...
 
@@ -233,7 +232,7 @@ int kthread_join(int thread_id) {
     struct thread *this_thread = mythread();
 
     if(found && t == this_thread){
-        cprintf("KTHREAD_JOIN ON SELF!");
+        //cprintf("KTHREAD_JOIN ON SELF!"); // TODO DEBUG ONLY
         return -1;
     }
     if (!found) return -1; // No thread with that thread_id, so no reason to suspend
@@ -242,7 +241,7 @@ int kthread_join(int thread_id) {
     // SUSPEND UNTIL t HAS EXITED!
     if (t->state != ZOMBIE && t->state != UNUSED) {
         acquire(&ptable.lock);
-        sleep(t, &ptable.lock); // TODO: IS THIS THE RIGHT LOCK?!
+        sleep(t, &ptable.lock);
         release(&ptable.lock);
     }
 
@@ -486,7 +485,7 @@ fork(void) {
     // Allocate process.
     // also allocated the main thread of this proc, and sets it's EIP to be forkret.
     if ((np = allocproc()) == 0) {
-        cprintf("NO MORTE PORCC");
+        //cprintf("NO MORTE PORCC"); // TODO DEBUG ONLY
         return -1;
     }
 
@@ -589,9 +588,6 @@ exit(void) {
 
     acquire(&ptable.lock);
 
-    // Wake parent who might be sleeping..
-    wakeup1(curproc->parent);
-
 
     // Mark all non-empty threads of this proc as Killed.
     // wake threads sleeping on this chan if needed.
@@ -615,6 +611,7 @@ exit(void) {
         }
     }
 
+    release(&ptable.lock);
 
     // BUSY-WAITS FOR ALL THREADS TO BE ZOMBIE or UNUSED
     int threads_alive = 1;
@@ -627,6 +624,7 @@ exit(void) {
             }
         }
     }
+
 
 
     // Forcefully decallocate mutexs allocated by this dead proc, if there are any
@@ -643,13 +641,18 @@ exit(void) {
             mu->locking_thread = 0;
             mu->owning_proc = 0;
             mu->id = 0;
-            mu->state = UNUSED;
+            mu->state = M_UNUSED;
         }
     }
     release(&mutable.lock);
 
+    acquire(&ptable.lock);
+
     curproc->state = P_ZOMBIE;
     curthread->state = ZOMBIE; // current thread will be cleaned upon wait() on this proc
+
+    // Wake parent who might be sleeping..
+    wakeup1(curproc->parent);
 
     // Jump into the scheduler, never to return.
     sched();
@@ -671,7 +674,8 @@ wait(void) {
         // Scan through table looking for exited children.
         havekids = 0;
         for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
-            if (p->parent != curproc)
+            // So that we won't wait ourself (deadlock)
+            if (p->parent != curproc || p == curproc)
                 continue;
             havekids = 1;
             if (p->state == P_ZOMBIE) {
@@ -681,8 +685,18 @@ wait(void) {
                     t = &(p->threads[i]);
                     // wait for this thread to exit.
                     if (t->state != UNUSED) {
-                        if (t->state == SLEEPING) t->state = RUNNABLE;
-                        kthread_join1(t->tid);
+                        if (t->state != ZOMBIE) panic("Zombie Proc with alive threads!");
+                            // clean t if it's a zombie
+                        else if (t->state == ZOMBIE) {
+                            t->ustack = 0;
+                            t->tid = 0;
+                            t->state = UNUSED;
+                            t->context = 0;
+                            t->chan = 0;
+                            kfree(t->kstack);
+                            t->kstack = 0;
+                            t->mutex_waitlist_link = 0;
+                        }
                     }
                 }
 
@@ -709,7 +723,7 @@ wait(void) {
         // Wait for children to exit.  (See wakeup1 call in proc_exit.)
         sleep(curproc, &ptable.lock); //DOC: wait-sleep
     }
-    // we never get here
+    // we never get here, we're either sleeping on proc or exiting via zombie cleaning.
     release(&ptable.lock);
 }
 

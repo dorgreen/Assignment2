@@ -30,7 +30,7 @@ exec(char *path, char **argv)
 
     // make sure to kill all other threads of this proc
     for(struct thread *t = &(curproc->threads[0]) ; t < &curproc->threads[NTHREAD]; t++){
-        if(t->state != UNUSED && t != curthread){
+        if(t->state != UNUSED && t != curthread && t->state != ZOMBIE){
             t->killed = 1;
             if(t->state == SLEEPING) t->state = RUNNABLE;
         }
@@ -47,22 +47,11 @@ exec(char *path, char **argv)
                 if (t->state == SLEEPING) t->state = RUNNABLE;
                 threads_alive++;
             }
-            if(t->state == ZOMBIE) kthread_join(t->tid);
+            if(t->state == ZOMBIE){
+                kthread_join(t->tid);
+            }
         }
     }
-
-//    // forcefully kill the unkilled...
-//    for(struct thread *t = &(curproc->threads[0]) ; t < &curproc->threads[NTHREAD]; t++){
-//        if(t->state != UNUSED && t->state != ZOMBIE && t != curthread && t->state != RUNNING){
-//            kfree(t->kstack);
-//            t->kstack = 0;
-//            t->tf = 0;
-//            t->killed = 0;
-//            t->state = ZOMBIE;
-//            wakeup(t); // wake threads waiting on this thread e.g kthread_join
-//            //close_thread(t);
-//        }
-//    }
 
 
   begin_op();
