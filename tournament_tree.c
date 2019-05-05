@@ -140,7 +140,7 @@ int trnmnt_tree_release(trnmnt_tree* tree,int ID){
     // Release me
     ans = kthread_mutex_unlock(tree->mutex_id);
 
-    // BASE CASE
+    // BASE CASE, made it to leaf-mutex
     if(tree->height == 1) return ans;
 
     // Now go down
@@ -157,8 +157,9 @@ int trnmnt_tree_release(trnmnt_tree* tree,int ID){
     }
     else{
         // ID is in the left sub-tree.
+        // No need to change ID :)
         if(tree->left == 0)
             return -1;
-        return trnmnt_tree_acquire(tree->left, ID);
+        return trnmnt_tree_release(tree->left, ID);
     }
 }
