@@ -214,6 +214,7 @@ void kthread_exit() {
 //        successful, the function returns zero. Otherwise, -1 should be returned to indicate an error.
 int kthread_join(int thread_id) {
     struct thread *t = 0;
+    struct thread *this_thread;
     struct proc *p;
     int found = 0;
 
@@ -229,20 +230,21 @@ int kthread_join(int thread_id) {
         }
     }
 
-    struct thread *this_thread = mythread();
+    this_thread = mythread();
 
+    // Avoid sleeping on self
     if(found && t == this_thread){
         //cprintf("KTHREAD_JOIN ON SELF!"); // TODO DEBUG ONLY
         return -1;
     }
     if (!found) return -1; // No thread with that thread_id, so no reason to suspend
 
-
+    // MAYBE HOLD THE LOCK WHILE HANDLEING TO AVID DUEL JOING?!?!
     // SUSPEND UNTIL t HAS EXITED!
+    acquire(&ptable.lock);
     if (t->state != ZOMBIE && t->state != UNUSED) {
-        acquire(&ptable.lock);
         sleep(t, &ptable.lock);
-        release(&ptable.lock);
+        //release(&ptable.lock);
     }
 
 
@@ -254,67 +256,66 @@ int kthread_join(int thread_id) {
         t->chan = 0;
         kfree(t->kstack);
         t->kstack = 0;
-        return 0;
+        //return 0;
         t->mutex_waitlist_link = 0;
     }// clean t if it's a zombie
-
+    release(&ptable.lock);
     if (t->state == UNUSED) {
         return 0; // No reason to suspend if exited.
     }
-
 
     return -1;
 
 }
 
-// SAME AS JOIN, ASSUMES HOLDING PTABLE LOCK UPON ENTRANCE AND EXIT!
-int kthread_join1(int thread_id) {
-    struct thread *t;
-    struct proc *p;
-    int found = 0;
-
-    // Search for a thread with such tid
-    for (p = &ptable.proc[0]; p < &ptable.proc[NPROC]; p++) {
-        if (p->state == P_USED || p->state == P_ZOMBIE) {
-            for (t = &p->threads[0]; t < &p->threads[NTHREAD]; t++) {
-                if (t->tid == thread_id) {
-                    found = 1;
-                    break;
-                }
-            }
-        }
-    }
-
-
-
-    if (!found) return -1; // No thread with that thread_id, so no reason to suspend
-
-
-    // SUSPEND UNTIL t HAS EXITED!
-    if (t->state != ZOMBIE && t->state != UNUSED) {
-        sleep(t, &ptable.lock); // TODO: IS THIS THE RIGHT LOCK?!
-    }
-
-
-    if (t->state == ZOMBIE) {
-        t->tid = 0;
-        t->state = UNUSED;
-        t->context = 0;
-        t->chan = 0;
-        kfree(t->kstack);
-        t->kstack = 0;
-        t->mutex_waitlist_link = 0;
-        return 0;
-    }// clean t if it's a zombie
-
-    if (t->state == UNUSED) {
-        return 0; // No reason to suspend if exited.
-    }
-
-
-    return -1;
-
-}
+//// SAME AS JOIN, ASSUMES HOLDING PTABLE LOCK UPON ENTRANCE AND EXIT!
+//int kthread_join1(int thread_id) {
+//    struct thread *t;
+//    struct proc *p;
+//    int found = 0;
+//
+//    // Search for a thread with such tid
+//    for (p = &ptable.proc[0]; p < &ptable.proc[NPROC]; p++) {
+//        if (p->state == P_USED || p->state == P_ZOMBIE) {
+//            for (t = &p->threads[0]; t < &p->threads[NTHREAD]; t++) {
+//                if (t->tid == thread_id) {
+//                    found = 1;
+//                    break;
+//                }
+//            }
+//        }
+//    }
+//
+//
+//
+//    if (!found) return -1; // No thread with that thread_id, so no reason to suspend
+//
+//
+//    // SUSPEND UNTIL t HAS EXITED!
+//    if (t->state != ZOMBIE && t->state != UNUSED) {
+//        sleep(t, &ptable.lock); // TODO: IS THIS THE RIGHT LOCK?!
+//    }
+//
+//
+//    if (t->state == ZOMBIE) {
+//        t->tid = 0;
+//        t->state = UNUSED;
+//        t->context = 0;
+//        t->chan = 0;
+//        kfree(t->kstack);
+//        t->kstack = 0;
+//        t->mutex_waitlist_link = 0;
+//        return 0;
+//    }// clean t if it's a zombie
+//
+//    if (t->state == UNUSED) {
+//        return 0; // No reason to suspend if exited.
+//    }
+//
+//
+//    return -1;
+//
+//}
 
 // This functions handles closing a thread given by pointer
 // if it is the last thread of a non-zombie, also call exit.
@@ -323,6 +324,7 @@ int close_thread(struct thread *t) {
 
     if (t->parent == initproc) return -1;
 
+    acquire(&ptable.lock);
     int live_threads_count = 0;
     for (struct thread *thrd = &(t->parent->threads[0]); thrd < &t->parent->threads[NTHREAD]; thrd++) {
         if (thrd != t && !(thrd->state == UNUSED || thrd->state == ZOMBIE)) {
@@ -336,13 +338,13 @@ int close_thread(struct thread *t) {
     // after the first call to exit() the proc is already P_ZOMBIE
     // the last thread (this) will close the proc and set itself to ZOMBIE.
     if (live_threads_count == 0 && t->parent->state == P_USED) {
+        release(&ptable.lock);
         exit();
     } else {
         t->state = ZOMBIE;
         t->killed = 0;
-        wakeup(t); // wake threads waiting on this thread e.g kthread_join
-
-        acquire(&ptable.lock);
+        wakeup1(t); // wake threads waiting on this thread e.g kthread_join
+        //acquire(&ptable.lock);
         sched();
     }
 
@@ -570,12 +572,12 @@ exit(void) {
 
     // TODO: does this block should be executed after actually closing all threads?
     // MIND: MUST NOT HOLD PTABLE LOCK HERE.
-    begin_op();
-    iput(curproc->cwd);
-    end_op();
+    if(curproc->cwd != 0){
+        begin_op();
+        iput(curproc->cwd);
+        end_op();
+    }
     curproc->cwd = 0;
-
-
 
     // if two threads try to kill the same proc,
     // the first to enter will mark all other threads as killed
