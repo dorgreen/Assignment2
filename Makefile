@@ -29,7 +29,7 @@ OBJS = \
 	vm.o\
 
 # Cross-compiling (e.g., on Mac OS X)
-##TOOLPREFIX = i386-elf-
+#TOOLPREFIX = i386-elf-
 
 # Using native tools (e.g., on X86 Linux)
 #TOOLPREFIX = 
@@ -165,6 +165,7 @@ mkfs: mkfs.c fs.h
 # http://www.gnu.org/software/make/manual/html_node/Chained-Rules.html
 .PRECIOUS: %.o
 
+
 UPROGS=\
 	_cat\
 	_echo\
@@ -180,6 +181,7 @@ UPROGS=\
 	_stressfs\
 	_usertests\
 	_wc\
+	_tournament_tree\
 	_zombie\
 
 fs.img: mkfs README $(UPROGS)
@@ -247,9 +249,11 @@ qemu-nox-gdb: fs.img xv6.img .gdbinit
 # rename it to rev0 or rev1 or so on and then
 # check in that version.
 
+#creThreads.c cThreW16T.c doNoth.c allBut1.c
+
 EXTRA=\
 	mkfs.c ulib.c user.h cat.c echo.c forktest.c grep.c kill.c\
-	ln.c ls.c mkdir.c rm.c stressfs.c usertests.c wc.c zombie.c\
+	ln.c ls.c mkdir.c rm.c stressfs.c usertests.c wc.c  zombie.c\
 	printf.c umalloc.c tournament_tree.c\
 	README dot-bochsrc *.pl toc.* runoff runoff1 runoff.list\
 	.gdbinit.tmpl gdbutil\

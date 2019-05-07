@@ -121,16 +121,15 @@ void            userinit(void);
 int             wait(void);
 void            wakeup(void*);
 void            yield(void);
-void            capture_ptable_lock(); // USED FOR EXEC.C for making sure we won't exec & exit concurently
-void            release_ptable_lock();
-int             kthread_create();
-int             kthread_id();
-void            kthread_exit();
+int            kill_other_threads(void); // making sure we won't exec & exit concurently
+int             kthread_create(void(*)(), void*);
+int             kthread_id(void);
+void            kthread_exit(void);
 int             kthread_join(int tid);
-int             kthread_mutex_alloc();
-int             kthread_mutex_dealloc(int mutex_id);
-int             kthread_mutex_lock(int mutex_id);
-int             kthread_mutex_unlock(int mutex_id);
+int             kthread_mutex_alloc(void);
+int             kthread_mutex_dealloc(int);
+int             kthread_mutex_lock(int);
+int             kthread_mutex_unlock(int);
 int             close_thread(struct thread*);
 
 

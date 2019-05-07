@@ -21,22 +21,9 @@ exec(char *path, char **argv)
   struct proc *curproc = curthread->parent;
 
     // This makes sure we won't exec and exit at the same time
-    capture_ptable_lock();
-    if (mythread()->killed == 1){
-        release_ptable_lock();
-        yield();
-        return -1;
-    }
-
-    // make sure to kill all other threads of this proc
-    for(struct thread *t = &(curproc->threads[0]) ; t < &curproc->threads[NTHREAD]; t++){
-        if(t->state != UNUSED && t != curthread && t->state != ZOMBIE){
-            t->killed = 1;
-            if(t->state == SLEEPING) t->state = RUNNABLE;
-        }
-
-    }
-    release_ptable_lock();
+    i = kill_other_threads();
+    //if(i == 0) cprintf("^\n"); // TODO DEBUG ONLY
+    //if(i == 1) cprintf("#\n"); // TODO DEBUG ONLY
 
     // BUSY-WAITS FOR ALL THREADS TO BE ZOMBIE or UNUSED
     int threads_alive = 1;

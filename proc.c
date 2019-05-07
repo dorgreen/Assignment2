@@ -237,7 +237,9 @@ int kthread_join(int thread_id) {
         //cprintf("KTHREAD_JOIN ON SELF!"); // TODO DEBUG ONLY
         return -1;
     }
-    if (!found) return -1; // No thread with that thread_id, so no reason to suspend
+    if (!found){
+        return -1; // No thread with that thread_id, so no reason to suspend
+    }
 
     // MAYBE HOLD THE LOCK WHILE HANDLEING TO AVID DUEL JOING?!?!
     // SUSPEND UNTIL t HAS EXITED!
@@ -318,7 +320,7 @@ int kthread_join(int thread_id) {
 //}
 
 // This functions handles closing a thread given by pointer
-// if it is the last thread of a non-zombie, also call exit.
+// if it is the last thread of a non-zombie, call exit. this thread will be cleaned upon wait().
 // ASSUMES NOT HOLDING THE PTABLE.LOCK UPON ENTRY!
 int close_thread(struct thread *t) {
 
@@ -515,7 +517,7 @@ fork(void) {
         if (curproc->ofile[i])
             np->ofile[i] = filedup(curproc->ofile[i]);
 
-    // copy this thred's CWD to the main thread of the newly created proc
+    // copy this proc's CWD to the newly created proc
     np->cwd = idup(curproc->cwd);
 
     safestrcpy(np->name, curproc->name, sizeof(curproc->name));
@@ -597,7 +599,7 @@ exit(void) {
         if (t->state != UNUSED && t->state != ZOMBIE && t != curthread) {
             t->killed = 1; // even if t is running. it will be killed upon yielding or resched
             active_threads_count++;
-            if (t->state == SLEEPING) t->state = RUNNABLE;
+            //if (t->state == SLEEPING) t->state = RUNNABLE;
             wakeup1(t);
         }
     }
@@ -690,7 +692,7 @@ wait(void) {
                         if (t->state != ZOMBIE) panic("Zombie Proc with alive threads!");
                             // clean t if it's a zombie
                         else if (t->state == ZOMBIE) {
-                            t->ustack = 0;
+                            t->ustack = 0; // to be freed by the user, who should also keep the pointer :)
                             t->tid = 0;
                             t->state = UNUSED;
                             t->context = 0;
@@ -1234,13 +1236,32 @@ int kthread_mutex_unlock(int mutex_id) {
     return 0;
 }
 
-
-void capture_ptable_lock() {
+// return 1 for i'm first & the others killed
+int kill_other_threads(){
+    struct thread* curthread;
+    struct proc* curproc;
+    int first = 0;
+    curthread = mythread();
+    curproc = curthread->parent;
     acquire(&ptable.lock);
-    return;
-}
+    if (curthread->killed == 1){
+        release(&ptable.lock);
+        yield();
+        return 0;
+    }
 
-void release_ptable_lock() {
+    first = 1;
+
+// make sure to kill all other threads of this proc
+    for(struct thread *t = &(curproc->threads[0]) ; t < &curproc->threads[NTHREAD]; t++){
+        if(t->state != UNUSED && t != curthread && t->state != ZOMBIE){
+            t->killed = 1;
+            if(t->state == SLEEPING) t->state = RUNNABLE;
+        }
+
+    }
+
     release(&ptable.lock);
-    return;
+    return first;
+
 }
